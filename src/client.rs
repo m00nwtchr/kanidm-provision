@@ -81,13 +81,7 @@ impl KanidmClient {
             idm_admin_headers: HeaderMap::new(),
         };
 
-        let (session_id, token) = client.auth(
-            "idm_admin",
-            &std::env::var("KANIDM_PROVISION_IDM_ADMIN_TOKEN").context("KANIDM_PROVISION_IDM_ADMIN_TOKEN missing")?,
-        )?;
-        client
-            .idm_admin_headers
-            .insert("X-KANIDM-AUTH-SESSION-ID", HeaderValue::from_str(&session_id)?);
+        let token = std::env::var("KANIDM_TOKEN").context("KANIDM_TOKEN missing")?;
         client
             .idm_admin_headers
             .insert("Authorization", HeaderValue::from_str(&format!("Bearer {token}"))?);
