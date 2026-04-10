@@ -1,4 +1,5 @@
-FROM rust:1.93 as base
+FROM rust:1.93-alpine3.20 as base
+RUN apk add --no-cache musl-dev
 RUN cargo install cargo-chef --version ^0.1
 
 FROM base AS planner
