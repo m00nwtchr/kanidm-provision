@@ -1,10 +1,8 @@
 use std::collections::HashMap;
-use std::path::Path;
 
-use color_eyre::eyre::{bail, Context, Result};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Group {
     #[serde(default = "default_true")]
@@ -14,7 +12,7 @@ pub struct Group {
     pub overwrite_members: bool,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Person {
     #[serde(default = "default_true")]
@@ -24,14 +22,14 @@ pub struct Person {
     pub mail_addresses: Option<Vec<String>>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ClaimMap {
     pub join_type: String,
     pub values_by_group: HashMap<String, Vec<String>>,
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(untagged)]
 pub enum StringOrStrings {
     String(String),
@@ -47,7 +45,7 @@ impl StringOrStrings {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Oauth2System {
     #[serde(default = "default_true")]
@@ -75,15 +73,17 @@ pub struct Oauth2System {
     pub remove_orphaned_claim_maps: bool,
     #[serde(default)]
     pub claim_maps: HashMap<String, ClaimMap>,
+    #[serde(default)]
+    pub k8s: Option<Oauth2K8sConfig>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Systems {
     pub oauth2: HashMap<String, Oauth2System>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct State {
     pub groups: HashMap<String, Group>,
@@ -91,30 +91,26 @@ pub struct State {
     pub systems: Systems,
 }
 
+#[derive(Debug, Deserialize, Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct Oauth2K8sConfig {
+    pub image_url: Option<String>,
+    #[serde(default = "default_client_id_key")]
+    pub client_id_key: String,
+    #[serde(default = "default_client_secret_key")]
+    pub client_secret_key: String,
+}
+
+fn default_client_id_key() -> String {
+    "client_id".to_string()
+}
+fn default_client_secret_key() -> String {
+    "client_secret".to_string()
+}
+
 fn default_false() -> bool {
     false
 }
 fn default_true() -> bool {
     true
-}
-
-impl State {
-    pub fn new(filename: impl AsRef<Path>) -> Result<State> {
-        let file_content = std::fs::read_to_string(filename.as_ref())
-            .context(format!("Failed to read state file: {}", filename.as_ref().display()))?;
-        let state: State = serde_json::from_str(&file_content).context("Failed to parse state")?;
-        // make sure that all keys in State are lowercase, as the Kanidm API returns them in
-        // lowercase & we want to compare against that
-        for key in state
-            .persons
-            .keys()
-            .chain(state.groups.keys())
-            .chain(state.systems.oauth2.keys())
-        {
-            if *key != key.to_lowercase() {
-                bail!("Cannot parse state, '{key}' is not lowercase. Please only use lowercase keys for persons, groups and oauth systems.");
-            }
-        }
-        Ok(state)
-    }
 }

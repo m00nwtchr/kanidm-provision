@@ -7,6 +7,14 @@ description = "A small utility to help with kanidm provisioning"
 license = "MIT"
 publish = false
 
+[[bin]]
+name = "kanidm-provision"
+path = "src/main.rs"
+
+[[bin]]
+name = "kanidm-provision-sidecar"
+path = "src/bin/sidecar/main.rs"
+
 [profile.release]
 strip = true
 lto = "fat"
@@ -15,7 +23,10 @@ codegen-units = 1
 [dependencies]
 clap = { version = "4.5.39", features = ["derive"] }
 color-eyre = "0.6.5"
-reqwest = { version = "0.12.19", default-features = false, features = ["json", "rustls-tls-native-roots", "blocking", "multipart"] }
+futures = "0.3.32"
+k8s-openapi = { version = "0.27.1", features = ["v1_35"] }
+kube = { version = "3.1.0", features = ["runtime", "client"] }
+reqwest = { version = "0.12.19", default-features = false, features = ["json", "rustls-tls-webpki-roots", "blocking", "multipart"] }
 serde = { version = "1.0.219", features = ["derive"] }
 serde_json = "1.0.140"
 tokio = { version = "1.45.1", features = ["full"] }
