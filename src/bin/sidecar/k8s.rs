@@ -12,6 +12,7 @@ use std::collections::BTreeMap;
 use std::time::Duration;
 use tokio::signal::unix::{signal, SignalKind};
 use tokio::time::sleep;
+use tracing::{error, info, warn};
 pub async fn get_merged_state(client: &Client, namespace: &str) -> Result<serde_json::Value> {
     let api: Api<ConfigMap> = Api::namespaced(client.clone(), namespace);
     let lp = kube::api::ListParams::default().labels("kanidm_config=1");
@@ -100,7 +101,7 @@ pub async fn reconcile_secret(
         let secret_val = match fetch_basic_secret(http_client, kanidm_url, kanidm_token, name).await {
             Ok(val) => val,
             Err(e) => {
-                eprintln!("Failed to fetch secret for {name}: {e:#}");
+                error!(client = %name, error = format!("{e:#}"), "Failed to fetch secret");
                 continue;
             }
         };
@@ -126,10 +127,10 @@ pub async fn reconcile_secret(
             )
             .await
         {
-            eprintln!("Failed to patch secret {namespace}/{secret_name}: {e:#}");
+            error!(secret = %secret_name, %namespace, error = format!("{e:#}"), "Failed to patch secret");
             continue;
         }
-        println!("Reconciled secret {namespace}/{secret_name}");
+        info!(secret = %secret_name, %namespace, "Reconciled secret");
     }
 }
 
@@ -164,7 +165,7 @@ async fn download_single_icon(
 ) -> Result<String> {
     let icon_path = icons_dir.join(format!("{name}.png"));
     if !icon_path.exists() {
-        println!("Downloading icon for {name} from {image_url}...");
+        info!(%name, %image_url, "Downloading icon");
         let bytes = http_client
             .get(image_url)
             .send()
@@ -180,7 +181,7 @@ async fn download_single_icon(
 async fn download_icons(http_client: &reqwest::Client, state: &mut State) {
     let icons_dir = std::env::temp_dir().join("kanidm_icons");
     if let Err(e) = tokio::fs::create_dir_all(&icons_dir).await {
-        eprintln!("Failed to create icons directory: {e:#}");
+        error!(error = format!("{e:#}"), "Failed to create icons directory");
         return;
     }
 
@@ -193,7 +194,7 @@ async fn download_icons(http_client: &reqwest::Client, state: &mut State) {
                 oauth2.image_file = Some(icon_path);
             }
             Err(e) => {
-                eprintln!("Failed to download icon for {name}: {e:#}");
+                warn!(%name, error = format!("{e:#}"), "Failed to download icon");
             }
         }
     }
@@ -202,24 +203,24 @@ async fn download_icons(http_client: &reqwest::Client, state: &mut State) {
 pub async fn wait_for_kanidm(kanidm_url: &str) -> Result<()> {
     let url = format!("{kanidm_url}/status");
     let mut sigterm = signal(SignalKind::terminate())?;
-    println!("Waiting for Kanidm to be ready at {url}...");
+    info!(%url, "Waiting for Kanidm to be ready");
     loop {
         tokio::select! {
             _ = sigterm.recv() => {
-                println!("Received SIGTERM while waiting for Kanidm, shutting down");
+                info!("Received SIGTERM while waiting for Kanidm, shutting down");
                 return Err(color_eyre::eyre::eyre!("interrupted by SIGTERM"));
             }
             result = reqwest::get(&url) => {
                 match result {
                     Ok(resp) if resp.status().is_success() => {
-                        println!("Kanidm is ready!");
+                        info!("Kanidm is ready");
                         return Ok(());
                     }
                     Ok(resp) => {
-                        eprintln!("Kanidm not ready (status {}), retrying in 2s...", resp.status());
+                        warn!(status = %resp.status(), "Kanidm not ready, retrying in 2s");
                     }
                     Err(e) => {
-                        eprintln!("Kanidm health check failed: {e:#}, retrying in 2s...");
+                        warn!(error = format!("{e:#}"), "Kanidm health check failed, retrying in 2s");
                     }
                 }
             }
@@ -243,7 +244,7 @@ pub async fn watch_and_reconcile(
     let mut stream = watcher(api, cfg).default_backoff().boxed();
     let mut sigterm = signal(SignalKind::terminate())?;
 
-    println!("Watching for ConfigMap changes in namespace '{namespace}'...");
+    info!(%namespace, "Watching for ConfigMap changes");
 
     if let Err(e) = reconcile(
         &http_client,
@@ -255,25 +256,25 @@ pub async fn watch_and_reconcile(
     )
     .await
     {
-        eprintln!("Error during initial reconciliation: {e:#}");
+        error!(error = format!("{e:#}"), "Error during initial reconciliation");
     }
 
     loop {
         tokio::select! {
             _ = sigterm.recv() => {
-                println!("Received SIGTERM, shutting down gracefully");
+                info!("Received SIGTERM, shutting down gracefully");
                 break;
             }
             event = stream.next() => {
                 match event {
                     Some(Ok(_)) => {
-                        println!("Change detected, reconciling...");
+                        info!("Change detected, reconciling");
                         sleep(Duration::from_secs(2)).await;
                         if let Err(e) = reconcile(&http_client, client, namespace, kanidm_url, kanidm_token, no_auto_remove).await {
-                            eprintln!("Error during reconciliation: {e:#}");
+                            error!(error = format!("{e:#}"), "Error during reconciliation");
                         }
                     }
-                    Some(Err(e)) => eprintln!("Watcher error: {e}"),
+                    Some(Err(e)) => error!(error = %e, "Watcher error"),
                     None => break,
                 }
             }

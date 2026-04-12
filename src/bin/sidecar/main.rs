@@ -3,6 +3,7 @@ mod k8s;
 use clap::Parser;
 use color_eyre::eyre::{eyre, Result};
 use kube::Client;
+use tracing_subscriber::EnvFilter;
 
 #[derive(Parser)]
 #[command(
@@ -27,6 +28,9 @@ struct Cli {
 #[tokio::main]
 async fn main() -> Result<()> {
     color_eyre::install()?;
+    tracing_subscriber::fmt()
+        .with_env_filter(EnvFilter::from_default_env())
+        .init();
     let args = Cli::parse();
     let token = std::env::var("KANIDM_TOKEN").map_err(|_| eyre!("KANIDM_TOKEN environment variable not set"))?;
 
