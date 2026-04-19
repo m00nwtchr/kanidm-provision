@@ -12,10 +12,11 @@ WORKDIR /src
 COPY --from=planner /src/recipe.json recipe.json
 RUN cargo chef cook --release --recipe-path recipe.json
 COPY . .
-RUN cargo build --release --frozen
+RUN cargo build --release --frozen --bin kanidm-provision-sidecar
 
-FROM gcr.io/distroless/static:nonroot
-COPY --from=build /src/target/release/kanidm-provision /kanidm-provision
+FROM scratch
 COPY --from=build /src/target/release/kanidm-provision-sidecar /kanidm-provision-sidecar
 
-ENTRYPOINT ["/kanidm-provision"]
+USER 65532:65532
+
+ENTRYPOINT ["/kanidm-provision-sidecar"]
