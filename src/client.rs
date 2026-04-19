@@ -12,7 +12,6 @@ use serde_json::{json, Value};
 
 use crate::log_event;
 
-pub const ENDPOINT_AUTH: &str = "/v1/auth";
 pub const ENDPOINT_GROUP: &str = "/v1/group";
 pub const ENDPOINT_PERSON: &str = "/v1/person";
 pub const ENDPOINT_OAUTH2: &str = "/v1/oauth2";
@@ -72,7 +71,7 @@ pub fn get_value_array(attr: &str, existing_entities: &HashMap<String, Value>, n
 }
 
 impl KanidmClient {
-    pub fn new(url: &str, accept_invalid_certs: bool) -> Result<KanidmClient> {
+    pub fn new(url: &str, token: &str, accept_invalid_certs: bool) -> Result<KanidmClient> {
         let mut client = KanidmClient {
             url: url.to_string(),
             client: Client::builder()
@@ -80,51 +79,11 @@ impl KanidmClient {
                 .build()?,
             idm_admin_headers: HeaderMap::new(),
         };
-
-        let token = std::env::var("KANIDM_TOKEN").context("KANIDM_TOKEN missing")?;
         client
             .idm_admin_headers
             .insert("Authorization", HeaderValue::from_str(&format!("Bearer {token}"))?);
 
         Ok(client)
-    }
-
-    pub fn auth(&self, user: &str, password: &str) -> Result<(String, String)> {
-        let init_response = self
-            .client
-            .post(format!("{}{ENDPOINT_AUTH}", self.url))
-            .json(&json!({ "step": { "init": user } }))
-            .send()?
-            .detailed_error_for_status()?;
-
-        let session_id = init_response
-            .headers()
-            .get("X-KANIDM-AUTH-SESSION-ID")
-            .ok_or_eyre("No session id was returned by the server!")?;
-
-        let _begin_response = self
-            .client
-            .post(format!("{}{ENDPOINT_AUTH}", self.url))
-            .header("X-KANIDM-AUTH-SESSION-ID", session_id)
-            .json(&json!({ "step": { "begin": "password" } }))
-            .send()?
-            .get_json_response()?;
-
-        let cred_response = self
-            .client
-            .post(format!("{}{ENDPOINT_AUTH}", self.url))
-            .header("X-KANIDM-AUTH-SESSION-ID", session_id)
-            .json(&json!({ "step": { "cred": { "password": password } } }))
-            .send()?
-            .get_json_response()?;
-
-        let token = cred_response
-            .pointer("/state/success")
-            .and_then(|x| x.as_str())
-            .map(|x| x.to_string())
-            .ok_or_else(|| eyre!("No token found in response (incorrect password?): {cred_response:?}"))?;
-
-        Ok((session_id.to_str()?.to_string(), token))
     }
 
     pub fn get_entities(&self, endpoint: &str) -> Result<HashMap<String, Value>> {

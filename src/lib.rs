@@ -1,0 +1,410 @@
+pub mod client;
+pub mod state;
+
+use std::collections::{HashMap, HashSet};
+
+use client::{get_value_array, KanidmClient, ENDPOINT_GROUP, ENDPOINT_OAUTH2, ENDPOINT_PERSON};
+use color_eyre::{
+    eyre::{bail, eyre, Result},
+    owo_colors::OwoColorize,
+    Section,
+};
+use serde_json::{json, Value};
+use state::State;
+
+pub const PROVISION_TRACKING_GROUP: &str = "ext_idm_provisioned_entities";
+
+pub fn log_status(message: &str) {
+    println!("{}", message.blue().bold());
+}
+
+pub fn log_event(event: &str, message: &str) {
+    println!("{:>12} {}", event.green().bold(), message);
+}
+
+/// Return a map of all tracked entities and ensure that their names are unique.
+fn all_tracked_entities(state: &State) -> Result<Vec<String>> {
+    let mut entity_names: HashMap<_, Vec<&str>> = HashMap::new();
+    for i in state.groups.keys() {
+        entity_names.entry(i.to_owned()).or_default().push("group");
+    }
+    for i in state.persons.keys() {
+        entity_names.entry(i.to_owned()).or_default().push("person");
+    }
+    for i in state.systems.oauth2.keys() {
+        entity_names.entry(i.to_owned()).or_default().push("oauth2");
+    }
+
+    let mut error = eyre!("One or more entities have the same name (see notes)");
+    let mut any_bad = false;
+    for (k, v) in &entity_names {
+        if v.len() > 1 {
+            error = error.note(format!("{k} is used multiple times as {v:?}"));
+            any_bad = true;
+        }
+    }
+
+    if any_bad {
+        return Err(error);
+    }
+
+    Ok(entity_names.keys().cloned().collect())
+}
+
+macro_rules! update_attrs {
+    ($kanidm_client:expr, $endpoint:expr, $existing:expr, $name:expr, $append:expr, [ $( $key:literal : $value:expr ),*, ]) => {
+        $(
+            $kanidm_client.update_entity_attrs($endpoint, $existing, $name, $key, $value, $append)?;
+        )*
+    };
+}
+
+macro_rules! update_oauth2 {
+    ($kanidm_client:expr, $existing:expr, $name:expr, [ $( $key:literal : $value:expr ),*, ]) => {
+        $(
+            if let Some(value) = $value {
+                $kanidm_client.update_oauth2_attrs($existing, $name, $key, vec![value])?;
+            } else {
+                $kanidm_client.update_oauth2_attrs($existing, $name, $key, vec![])?;
+            }
+        )*
+    };
+}
+
+fn sync_groups(
+    state: &State,
+    kanidm_client: &KanidmClient,
+    existing_groups: &mut HashMap<String, Value>,
+    preexisting_entity_names: &HashSet<String>,
+) -> Result<()> {
+    log_status("Syncing groups");
+    for (name, group) in &state.groups {
+        if group.present {
+            if !existing_groups.contains_key(name) {
+                if preexisting_entity_names.contains(name) {
+                    bail!("Cannot create group '{name}' because the name is already in use by another entity!");
+                }
+
+                kanidm_client.create_entity(ENDPOINT_GROUP, name, &json!({ "attrs": { "name": [ name ] } }))?;
+                existing_groups.clear();
+                existing_groups.extend(kanidm_client.get_entities(ENDPOINT_GROUP)?);
+            }
+        } else if existing_groups.contains_key(name) {
+            kanidm_client.delete_entity(ENDPOINT_GROUP, name)?;
+        }
+    }
+
+    Ok(())
+}
+
+fn sync_persons(
+    state: &State,
+    kanidm_client: &KanidmClient,
+    existing_persons: &mut HashMap<String, Value>,
+    preexisting_entity_names: &HashSet<String>,
+) -> Result<()> {
+    log_status("Syncing persons");
+    for (name, person) in &state.persons {
+        if person.present {
+            if !existing_persons.contains_key(name) {
+                if preexisting_entity_names.contains(name) {
+                    bail!("Cannot create person '{name}' because the name is already in use by another entity!");
+                }
+
+                kanidm_client.create_entity(
+                    ENDPOINT_PERSON,
+                    name,
+                    &json!({ "attrs": {
+                        "name": [ name ],
+                        "displayname": [ person.display_name ]
+                    }}),
+                )?;
+                existing_persons.clear();
+                existing_persons.extend(kanidm_client.get_entities(ENDPOINT_PERSON)?);
+            }
+
+            update_attrs!(kanidm_client, ENDPOINT_PERSON, &existing_persons, &name, false, [
+                "displayname": vec![person.display_name.clone()],
+                "legalname": person.legal_name.clone().map_or_else(Vec::new, |x| vec![x]),
+                "mail": person.mail_addresses.clone().unwrap_or_else(Vec::new),
+            ]);
+        } else if existing_persons.contains_key(name) {
+            kanidm_client.delete_entity(ENDPOINT_PERSON, name)?;
+        }
+    }
+
+    Ok(())
+}
+
+fn sync_oauth2s(
+    state: &State,
+    kanidm_client: &KanidmClient,
+    existing_oauth2s: &mut HashMap<String, Value>,
+    preexisting_entity_names: &HashSet<String>,
+) -> Result<()> {
+    log_status("Syncing oauth2 resource servers");
+    for (name, oauth2) in &state.systems.oauth2 {
+        if oauth2.present {
+            let mut do_create = false;
+            if let Some(entity) = existing_oauth2s.get(name) {
+                let is_public = match entity.pointer("/attrs/class") {
+                    Some(Value::Array(x)) => x.iter().any(|x| x.as_str() == Some("oauth2_resource_server_public")),
+                    _ => false,
+                };
+
+                if is_public != oauth2.public {
+                    kanidm_client.delete_entity(ENDPOINT_OAUTH2, name)?;
+                    do_create = true;
+                }
+            } else {
+                if preexisting_entity_names.contains(name) {
+                    bail!("Cannot create oauth2 resource server '{name}' because the name is already in use by another entity!");
+                }
+                do_create = true;
+            }
+
+            let origin_urls = oauth2.origin_url.clone().strings();
+
+            if do_create {
+                kanidm_client.create_entity(
+                    &format!("{ENDPOINT_OAUTH2}/{}", if oauth2.public { "_public" } else { "_basic" }),
+                    name,
+                    &json!({ "attrs": {
+                        "name": [name],
+                        "oauth2_rs_origin": origin_urls,
+                        "oauth2_rs_origin_landing": [oauth2.origin_landing],
+                        "displayname": [oauth2.display_name],
+                    }}),
+                )?;
+                existing_oauth2s.clear();
+                existing_oauth2s.extend(kanidm_client.get_entities(ENDPOINT_OAUTH2)?);
+            }
+
+            if oauth2.public {
+                if oauth2.allow_insecure_client_disable_pkce {
+                    println!(
+                        "{}",
+                        format!("WARN: ignoring allow_insecure_client_disable_pkce for public client {name}")
+                            .yellow()
+                            .bold()
+                    );
+                }
+                update_oauth2!(kanidm_client, &existing_oauth2s, &name, [
+                    "displayname": Some(oauth2.display_name.clone()),
+                    "oauth2_rs_origin_landing": Some(oauth2.origin_landing.clone()),
+                    "oauth2_allow_localhost_redirect": Some(oauth2.enable_localhost_redirects.to_string()),
+                    "oauth2_jwt_legacy_crypto_enable": Some(oauth2.enable_legacy_crypto.to_string()),
+                    "oauth2_prefer_short_username": Some(oauth2.prefer_short_username.to_string()),
+                ]);
+                kanidm_client.update_oauth2_attrs(existing_oauth2s, name, "oauth2_rs_origin", origin_urls)?;
+            } else {
+                if oauth2.enable_localhost_redirects {
+                    println!(
+                        "{}",
+                        format!("WARN: ignoring enable_localhost_redirects for non-public client {name}")
+                            .yellow()
+                            .bold()
+                    );
+                }
+                update_oauth2!(kanidm_client, &existing_oauth2s, &name, [
+                    "displayname": Some(oauth2.display_name.clone()),
+                    "oauth2_rs_origin_landing": Some(oauth2.origin_landing.clone()),
+                    "oauth2_allow_insecure_client_disable_pkce": Some(oauth2.allow_insecure_client_disable_pkce.to_string()),
+                    "oauth2_jwt_legacy_crypto_enable": Some(oauth2.enable_legacy_crypto.to_string()),
+                    "oauth2_prefer_short_username": Some(oauth2.prefer_short_username.to_string()),
+                ]);
+                kanidm_client.update_oauth2_attrs(existing_oauth2s, name, "oauth2_rs_origin", origin_urls)?;
+            }
+
+            for (group, scopes) in &oauth2.scope_maps {
+                kanidm_client.update_oauth2_map(
+                    "_scopemap",
+                    "oauth2_rs_scope_map",
+                    existing_oauth2s,
+                    name,
+                    group,
+                    scopes.clone(),
+                )?;
+            }
+
+            for (group, scopes) in &oauth2.supplementary_scope_maps {
+                kanidm_client.update_oauth2_map(
+                    "_sup_scopemap",
+                    "oauth2_rs_sup_scope_map",
+                    existing_oauth2s,
+                    name,
+                    group,
+                    scopes.clone(),
+                )?;
+            }
+
+            for (claim, claim_map) in &oauth2.claim_maps {
+                for (group, values) in &claim_map.values_by_group {
+                    kanidm_client.update_oauth2_claim_map(existing_oauth2s, name, claim, group, values.clone())?;
+                }
+
+                kanidm_client.update_oauth2_claim_map_join(existing_oauth2s, name, claim, &claim_map.join_type)?;
+            }
+
+            if oauth2.remove_orphaned_claim_maps {
+                let current_values = get_value_array("/attrs/oauth2_rs_claim_map", existing_oauth2s, name)?;
+                let orphaned: Vec<(&str, &str)> = current_values
+                    .iter()
+                    .map(|x| x.split(':').collect::<Vec<_>>())
+                    .map(|xs| (xs[0], xs[1].split_once('@').map(|x| x.0).unwrap_or(xs[1])))
+                    .filter(|&(claim, _)| !oauth2.claim_maps.contains_key(claim))
+                    .collect();
+
+                for (claim, group) in orphaned {
+                    kanidm_client.update_oauth2_claim_map(existing_oauth2s, name, claim, group, vec![])?;
+                }
+            }
+
+            if let Some(secret_file) = &oauth2.basic_secret_file {
+                if oauth2.public {
+                    println!(
+                        "{}",
+                        format!("WARN: ignoring basic_secret_file for public client {name}")
+                            .yellow()
+                            .bold()
+                    );
+                } else {
+                    kanidm_client.update_oauth2_basic_secret(name, secret_file)?;
+                }
+            }
+
+            if let Some(image_file) = &oauth2.image_file {
+                kanidm_client.update_oauth2_image(name, image_file)?;
+            }
+        } else if existing_oauth2s.contains_key(name) {
+            kanidm_client.delete_entity(ENDPOINT_OAUTH2, name)?;
+        }
+    }
+
+    Ok(())
+}
+
+fn setup_provision_tracking(
+    kanidm_client: &KanidmClient,
+    existing_groups: &mut HashMap<String, Value>,
+) -> Result<HashSet<String>> {
+    if !existing_groups.contains_key(PROVISION_TRACKING_GROUP) {
+        kanidm_client.create_entity(
+            ENDPOINT_GROUP,
+            PROVISION_TRACKING_GROUP,
+            &json!({ "attrs": { "name": [ PROVISION_TRACKING_GROUP ] } }),
+        )?;
+        existing_groups.clear();
+        existing_groups.extend(kanidm_client.get_entities(ENDPOINT_GROUP)?);
+    }
+
+    let entity = existing_groups.get(PROVISION_TRACKING_GROUP).ok_or_else(|| {
+        eyre!("Could not find provision tracking group '{PROVISION_TRACKING_GROUP}' in {ENDPOINT_GROUP}")
+    })?;
+
+    let mut current_values = match entity.pointer("/attrs/member") {
+        Some(Value::Array(x)) => x
+            .iter()
+            .filter_map(|x| x.as_str())
+            .map(|x| x.split_once('@').map(|x| x.0).unwrap_or(x).to_string())
+            .collect(),
+        None => vec![],
+        other => {
+            bail!("Invalid attr value for members of entity {ENDPOINT_GROUP}/{PROVISION_TRACKING_GROUP}: {other:?}")
+        }
+    };
+
+    Ok(HashSet::from_iter(current_values.drain(0..)))
+}
+
+fn remove_orphaned_entities(
+    kanidm_client: &KanidmClient,
+    provisioned_entities: &HashSet<String>,
+    existing_groups: &HashMap<String, Value>,
+    existing_persons: &HashMap<String, Value>,
+    existing_oauth2s: &HashMap<String, Value>,
+    tracked_entities: &[String],
+) -> Result<()> {
+    log_status("Removing orphaned entities");
+    let tracked_entities = HashSet::from_iter(tracked_entities.iter().cloned());
+    let orphaned_entities = provisioned_entities.difference(&tracked_entities);
+    for orphan in orphaned_entities {
+        if existing_groups.contains_key(orphan) {
+            kanidm_client.delete_entity(ENDPOINT_GROUP, orphan)?;
+        } else if existing_persons.contains_key(orphan) {
+            kanidm_client.delete_entity(ENDPOINT_PERSON, orphan)?;
+        } else if existing_oauth2s.contains_key(orphan) {
+            kanidm_client.delete_entity(ENDPOINT_OAUTH2, orphan)?;
+        }
+    }
+
+    Ok(())
+}
+
+pub fn run_provisioning(
+    url: &str,
+    token: &str,
+    state: &State,
+    accept_invalid_certs: bool,
+    no_auto_remove: bool,
+) -> Result<()> {
+    for key in state
+        .persons
+        .keys()
+        .chain(state.groups.keys())
+        .chain(state.systems.oauth2.keys())
+    {
+        if *key != key.to_lowercase() {
+            bail!("Key '{key}' must be lowercase");
+        }
+    }
+    let tracked_entities = all_tracked_entities(state)?;
+    let kanidm_client = KanidmClient::new(url, token, accept_invalid_certs)?;
+
+    let mut existing_groups = kanidm_client.get_entities(ENDPOINT_GROUP)?;
+    let mut existing_persons = kanidm_client.get_entities(ENDPOINT_PERSON)?;
+    let mut existing_oauth2s = kanidm_client.get_entities(ENDPOINT_OAUTH2)?;
+
+    let mut preexisting_entity_names = HashSet::new();
+    preexisting_entity_names.extend(existing_groups.keys().cloned());
+    preexisting_entity_names.extend(existing_persons.keys().cloned());
+    preexisting_entity_names.extend(existing_oauth2s.keys().cloned());
+
+    let provisioned_entities = setup_provision_tracking(&kanidm_client, &mut existing_groups)?;
+
+    sync_groups(&state, &kanidm_client, &mut existing_groups, &preexisting_entity_names)?;
+    sync_persons(&state, &kanidm_client, &mut existing_persons, &preexisting_entity_names)?;
+    sync_oauth2s(&state, &kanidm_client, &mut existing_oauth2s, &preexisting_entity_names)?;
+
+    log_status("Syncing group members");
+    for (name, group) in &state.groups {
+        if group.present {
+            update_attrs!(kanidm_client, ENDPOINT_GROUP, &existing_groups, &name, !group.overwrite_members, [
+                "member": group.members.clone(),
+            ]);
+        }
+    }
+
+    log_status("Tracking provisioned entities");
+    existing_groups = kanidm_client.get_entities(ENDPOINT_GROUP)?;
+    kanidm_client.update_entity_attrs(
+        ENDPOINT_GROUP,
+        &existing_groups,
+        PROVISION_TRACKING_GROUP,
+        "member",
+        tracked_entities.clone(),
+        true,
+    )?;
+
+    if !no_auto_remove {
+        remove_orphaned_entities(
+            &kanidm_client,
+            &provisioned_entities,
+            &existing_groups,
+            &existing_persons,
+            &existing_oauth2s,
+            &tracked_entities,
+        )?;
+    }
+    Ok(())
+}
