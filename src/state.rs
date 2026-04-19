@@ -102,10 +102,10 @@ pub struct Oauth2K8sConfig {
 }
 
 fn default_client_id_key() -> String {
-    "client_id".to_string()
+    "client-id".to_string()
 }
 fn default_client_secret_key() -> String {
-    "client_secret".to_string()
+    "client-secret".to_string()
 }
 
 fn default_false() -> bool {
