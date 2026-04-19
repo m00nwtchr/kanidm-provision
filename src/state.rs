@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Group {
     #[serde(default = "default_true")]
@@ -12,7 +12,7 @@ pub struct Group {
     pub overwrite_members: bool,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Person {
     #[serde(default = "default_true")]
@@ -22,7 +22,7 @@ pub struct Person {
     pub mail_addresses: Option<Vec<String>>,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ClaimMap {
     pub join_type: String,
@@ -45,7 +45,7 @@ impl StringOrStrings {
     }
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Oauth2System {
     #[serde(default = "default_true")]
@@ -77,13 +77,13 @@ pub struct Oauth2System {
     pub k8s: Option<Oauth2K8sConfig>,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Systems {
     pub oauth2: HashMap<String, Oauth2System>,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct State {
     pub groups: HashMap<String, Group>,
@@ -91,7 +91,7 @@ pub struct State {
     pub systems: Systems,
 }
 
-#[derive(Debug, Deserialize, Serialize, Default)]
+#[derive(Debug, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct Oauth2K8sConfig {
     pub image_url: Option<String>,
