@@ -19,10 +19,12 @@ struct Cli {
     #[arg(long, env = "KANIDM_NAMESPACE")]
     namespace: String,
 
-    /// Do not automatically remove orphaned entities that were previously provisioned
-    /// but have since been removed from the state file.
+    /// Automatically remove orphaned entities that were previously provisioned but are
+    /// no longer declared in any ConfigMap. Off by default (matches the pre-sidecar bash
+    /// behavior which always passed --no-auto-remove); enabling it will delete a group
+    /// referenced only by scope_maps/claim_maps, which then makes those maps 404.
     #[arg(long)]
-    no_auto_remove: bool,
+    auto_remove: bool,
 }
 
 #[tokio::main]
@@ -35,5 +37,5 @@ async fn main() -> Result<()> {
     let token = std::env::var("KANIDM_TOKEN").map_err(|_| eyre!("KANIDM_TOKEN environment variable not set"))?;
 
     let client = Client::try_default().await?;
-    k8s::watch_and_reconcile(&client, &args.namespace, &args.url, &token, args.no_auto_remove).await
+    k8s::watch_and_reconcile(&client, &args.namespace, &args.url, &token, !args.auto_remove).await
 }
