@@ -344,11 +344,10 @@ fn remove_orphaned_entities(
 pub fn run_provisioning(
     url: &str,
     token: &str,
-    state_val: serde_json::Value,
+    state: &State,
     accept_invalid_certs: bool,
     no_auto_remove: bool,
 ) -> Result<()> {
-    let state: State = serde_json::from_value(state_val)?;
     for key in state
         .persons
         .keys()
@@ -359,7 +358,7 @@ pub fn run_provisioning(
             bail!("Key '{key}' must be lowercase");
         }
     }
-    let tracked_entities = all_tracked_entities(&state)?;
+    let tracked_entities = all_tracked_entities(state)?;
     let kanidm_client = KanidmClient::new(url, token, accept_invalid_certs)?;
 
     let mut existing_groups = kanidm_client.get_entities(ENDPOINT_GROUP)?;

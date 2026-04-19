@@ -145,11 +145,11 @@ async fn reconcile(
     let state_val = get_merged_state(client, namespace).await?;
     let mut state: State = serde_json::from_value(state_val)?;
     download_icons(http_client, &mut state).await;
-    let state_val = serde_json::to_value(&state)?;
     let url = kanidm_url.to_string();
     let token = kanidm_token.to_string();
-    tokio::task::spawn_blocking(move || -> color_eyre::eyre::Result<()> {
-        run_provisioning(&url, &token, state_val, false, no_auto_remove)
+    let state = tokio::task::spawn_blocking(move || -> color_eyre::eyre::Result<State> {
+        run_provisioning(&url, &token, &state, false, no_auto_remove)?;
+        Ok(state)
     })
     .await
     .map_err(|e| color_eyre::eyre::eyre!("Task panicked: {e}"))??;
