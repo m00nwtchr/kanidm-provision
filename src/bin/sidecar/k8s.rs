@@ -179,8 +179,8 @@ async fn download_single_icon(
 }
 
 async fn download_icons(http_client: &reqwest::Client, state: &mut State) {
-    let icons_dir = std::env::temp_dir().join("kanidm_icons");
-    if let Err(e) = tokio::fs::create_dir_all(&icons_dir).await {
+    let icons_dir = std::path::Path::new("/data/icons");
+    if let Err(e) = tokio::fs::create_dir_all(icons_dir).await {
         error!(error = format!("{e:#}"), "Failed to create icons directory");
         return;
     }
@@ -189,7 +189,7 @@ async fn download_icons(http_client: &reqwest::Client, state: &mut State) {
         let Some(image_url) = oauth2.k8s.as_ref().and_then(|k| k.image_url.as_deref()) else {
             continue;
         };
-        match download_single_icon(http_client, name, image_url, &icons_dir).await {
+        match download_single_icon(http_client, name, image_url, icons_dir).await {
             Ok(icon_path) => {
                 oauth2.image_file = Some(icon_path);
             }
