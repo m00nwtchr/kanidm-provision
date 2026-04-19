@@ -144,7 +144,7 @@ async fn reconcile(
 ) -> Result<()> {
     let state_val = get_merged_state(client, namespace).await?;
     let mut state: State = serde_json::from_value(state_val)?;
-    download_icons(http_client, &mut state).await;
+    download_icons(http_client, &mut state, kanidm_url, kanidm_token).await;
     let url = kanidm_url.to_string();
     let token = kanidm_token.to_string();
     let state = tokio::task::spawn_blocking(move || -> color_eyre::eyre::Result<State> {
@@ -163,7 +163,7 @@ async fn download_single_icon(
     image_url: &str,
     icons_dir: &std::path::Path,
 ) -> Result<String> {
-    let icon_path = icons_dir.join(format!("{name}.png"));
+    let icon_path = icons_dir.join(format!("{name}.svg"));
     if !icon_path.exists() {
         info!(%name, %image_url, "Downloading icon");
         let bytes = http_client
@@ -178,7 +178,20 @@ async fn download_single_icon(
     Ok(icon_path.to_string_lossy().into_owned())
 }
 
-async fn download_icons(http_client: &reqwest::Client, state: &mut State) {
+async fn kanidm_has_image(http_client: &reqwest::Client, kanidm_url: &str, token: &str, name: &str) -> bool {
+    let url = format!("{kanidm_url}/ui/images/oauth2/{name}");
+    match http_client
+        .get(&url)
+        .header("Authorization", format!("Bearer {token}"))
+        .send()
+        .await
+    {
+        Ok(resp) => resp.status().is_success(),
+        Err(_) => false,
+    }
+}
+
+async fn download_icons(http_client: &reqwest::Client, state: &mut State, kanidm_url: &str, token: &str) {
     let icons_dir = std::path::Path::new("/data/icons");
     if let Err(e) = tokio::fs::create_dir_all(icons_dir).await {
         error!(error = format!("{e:#}"), "Failed to create icons directory");
@@ -189,6 +202,9 @@ async fn download_icons(http_client: &reqwest::Client, state: &mut State) {
         let Some(image_url) = oauth2.k8s.as_ref().and_then(|k| k.image_url.as_deref()) else {
             continue;
         };
+        if kanidm_has_image(http_client, kanidm_url, token, name).await {
+            continue;
+        }
         match download_single_icon(http_client, name, image_url, icons_dir).await {
             Ok(icon_path) => {
                 oauth2.image_file = Some(icon_path);
