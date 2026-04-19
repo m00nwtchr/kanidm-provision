@@ -12,11 +12,11 @@ use tracing_subscriber::EnvFilter;
 )]
 struct Cli {
     /// The URL of the kanidm instance
-    #[arg(long)]
+    #[arg(long, env = "KANIDM_INSTANCE")]
     url: String,
 
     /// Namespace to watch for changes
-    #[arg(long)]
+    #[arg(long, env = "KANIDM_NAMESPACE")]
     namespace: String,
 
     /// Do not automatically remove orphaned entities that were previously provisioned
