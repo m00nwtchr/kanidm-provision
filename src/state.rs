@@ -95,6 +95,7 @@ pub struct State {
 #[serde(rename_all = "camelCase")]
 pub struct Oauth2K8sConfig {
     pub image_url: Option<String>,
+    pub target_namespace: Option<String>,
     #[serde(default = "default_client_id_key")]
     pub client_id_key: String,
     #[serde(default = "default_client_secret_key")]
