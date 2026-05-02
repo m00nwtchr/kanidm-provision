@@ -169,7 +169,7 @@ async fn reconcile(
     tokio::task::spawn_blocking({
         let state = state.clone();
         move || -> color_eyre::eyre::Result<()> {
-            run_provisioning(&url, &token, &task_state, false, no_auto_remove)?;
+            run_provisioning(&url, &token, &state, false, no_auto_remove)?;
             Ok(())
         }
     })
