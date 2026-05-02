@@ -164,12 +164,14 @@ async fn reconcile(
     download_icons(http_client, &mut state, kanidm_url, kanidm_token).await;
 
     let state = Arc::new(state);
-    let task_state = Arc::clone(&state);
     let url = kanidm_url.to_string();
     let token = kanidm_token.to_string();
-    tokio::task::spawn_blocking(move || -> color_eyre::eyre::Result<()> {
-        run_provisioning(&url, &token, &task_state, false, no_auto_remove)?;
-        Ok(())
+    tokio::task::spawn_blocking({
+        let state = state.clone();
+        move || -> color_eyre::eyre::Result<()> {
+            run_provisioning(&url, &token, &task_state, false, no_auto_remove)?;
+            Ok(())
+        }
     })
     .await
     .map_err(|e| color_eyre::eyre::eyre!("Task panicked: {e}"))??;
