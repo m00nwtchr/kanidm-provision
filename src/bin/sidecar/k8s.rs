@@ -9,6 +9,7 @@ use kube::runtime::watcher::Config as WatcherConfig;
 use kube::runtime::{watcher, WatchStreamExt};
 use kube::{Api, Client};
 use std::collections::BTreeMap;
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::signal::unix::{signal, SignalKind};
 use tokio::time::sleep;
@@ -162,16 +163,18 @@ async fn reconcile(
     let mut state: State = serde_json::from_value(state_val)?;
     download_icons(http_client, &mut state, kanidm_url, kanidm_token).await;
 
-    reconcile_secret(http_client, client, namespace, &state, kanidm_url, kanidm_token).await;
-
+    let state = Arc::new(state);
+    let task_state = Arc::clone(&state);
     let url = kanidm_url.to_string();
     let token = kanidm_token.to_string();
     tokio::task::spawn_blocking(move || -> color_eyre::eyre::Result<()> {
-        run_provisioning(&url, &token, &state, false, no_auto_remove)?;
+        run_provisioning(&url, &token, &task_state, false, no_auto_remove)?;
         Ok(())
     })
     .await
     .map_err(|e| color_eyre::eyre::eyre!("Task panicked: {e}"))??;
+
+    reconcile_secret(http_client, client, namespace, &state, kanidm_url, kanidm_token).await;
 
     Ok(())
 }
